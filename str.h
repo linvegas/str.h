@@ -2,10 +2,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <unistd.h>
+#include <errno.h>
+#include <string.h>
 
-#define STR_INIT_CAP 16
+#define STR_INIT_CAP 128
 
 #define str(s) str_from(s, sizeof(s)-1)
 
@@ -41,21 +42,52 @@ Str str_from(const char *text, size_t len)
 
 Str str_from_file(const char *file_path)
 {
-    FILE *file = fopen(file_path, "r");
-    assert(file != NULL);
+    Str s = {0};
 
-    fseek(file, 0L, SEEK_END);
+    FILE *file = fopen(file_path, "r");
+
+    if (!file) {
+        fprintf(stderr, "ERROR: Tried to open '%s': %s\n", file_path, strerror(errno));
+        return s;
+    }
+
+    int ret = fseek(file, 0L, SEEK_END);
+
+    if (ret == -1) {
+        fprintf(stderr, "ERROR: Tried to seek to end of '%s': %s\n", file_path, strerror(errno));
+        fclose(file);
+        return s;
+    }
+
     long int file_len = ftell(file);
+
+    if (file_len == -1) {
+        fprintf(stderr, "ERROR: Tried to obtain position of '%s': %s\n", file_path, strerror(errno));
+        fclose(file);
+        return s;
+    }
 
     rewind(file);
 
     char *buffer = calloc((size_t)file_len+1, sizeof(char));
-    assert(buffer != NULL);
+
+    if (!buffer) {
+        fprintf(stderr, "ERROR: Tried to calloc buffer for '%s': %s\n", file_path, strerror(errno));
+        fclose(file);
+        return s;
+    }
 
     size_t buffer_len = fread(buffer, 1, (size_t)file_len ,file);
+
+    if (ferror(file) && !feof(file)) {
+        fprintf(stderr, "ERROR: Tried to read '%s': %s\n", file_path, strerror(errno));
+        fclose(file);
+        return s;
+    }
+
     buffer[buffer_len] = '\0';
 
-    Str s = str_from(buffer, buffer_len-1);
+    s = str_from(buffer, buffer_len-1);
 
     free(buffer);
     fclose(file);
@@ -65,18 +97,18 @@ Str str_from_file(const char *file_path)
 
 void str_insert(Str *s, char c, size_t idx)
 {
-    assert(idx <= s->len);
+    if (idx <= s->len) {
+        str_check_cap(s);
 
-    str_check_cap(s);
+        if (idx != s->len) {
+            // A simplified version of memmove
+            for (size_t i = s->len; i > idx; i--)
+                s->data[i] = s->data[i-1];
+        }
 
-    if (idx != s->len) {
-        // A simplified version of memmove
-        for (size_t i = s->len; i > idx; i--)
-            s->data[i] = s->data[i-1];
+        s->data[idx] = c;
+        s->len += 1;
     }
-
-    s->data[idx] = c;
-    s->len += 1;
 }
 
 void str_push(Str *s, char c)
@@ -86,12 +118,12 @@ void str_push(Str *s, char c)
 
 void str_delete(Str *s, size_t idx)
 {
-    assert(idx < s->len && idx > 0);
+    if (idx < s->len && idx > 0) {
+        for (size_t i = idx; i < s->len; i++)
+            s->data[i] = s->data[i+1];
 
-    for (size_t i = idx; i < s->len; i++)
-        s->data[i] = s->data[i+1];
-
-    s->len -= 1;
+        s->len -= 1;
+    }
 }
 
 void str_concat(Str *s, const char *text)
@@ -126,8 +158,13 @@ void str_check_cap(Str *s)
 {
     if (s->len >= s->cap) {
         s->cap = s->cap == 0 ? STR_INIT_CAP : s->cap * 2;
-        s->data = realloc(s->data, s->cap * sizeof(*s->data));
-        assert(s->data != NULL);
+        void *buf = realloc(s->data, s->cap * sizeof(*s->data));
+        if (!buf) {
+            fprintf(stderr, "ERROR: Tried to calloc buffer for str: %s\n", strerror(errno));
+            // TODO: return an error flag?
+            return;
+        }
+        s->data = (char *)buf;
     }
 }
 
